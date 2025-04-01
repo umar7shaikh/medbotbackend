@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Medical Chatbot</title>
+</head>
+<body>
+    <h2>Medical Chatbot</h2>
+    
+    <div id="chatBox"></div>
+    
+    <!-- Text Input -->
+    <input type="text" id="userMessage" placeholder="Type your message...">
+    <button onclick="sendMessage()">Send</button>
+
+    <!-- Speech-to-Text Input -->
+    <button onclick="startListening()">🎤 Speak</button>
+
+    <!-- Image Upload -->
+    <input type="file" id="imageUpload" accept="image/*">
+    <button onclick="uploadImage()">Upload Image</button>
+
+    <!-- Image Type Selection -->
+    <select id="imageType">
+        <option value="injury">Injury</option>
+        <option value="xray">X-Ray</option>
+        <option value="mri">MRI</option>
+        <option value="ct">CT Scan</option>
+    </select>
+
+    <script>
+        async function sendMessage() {
+        let userMessage = document.getElementById("userMessage").value.trim();
+        if (!userMessage) return;
+
+        let chatBox = document.getElementById("chatBox");
+        chatBox.innerHTML += `<p><b>You:</b> ${userMessage}</p>`;
+
+        try {
+            let response = await fetch("/conversation/process/", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ query: userMessage }) // ✅ Fixed key
+            });
+
+            let data = await response.json();
+            if (data.ai_response) {
+                chatBox.innerHTML += `<p><b>Bot:</b> ${data.ai_response}</p>`;
+                speakText(data.ai_response);
+            } else {
+                chatBox.innerHTML += `<p><b>Bot:</b> Sorry, I couldn't process your request.</p>`;
+            }
+        } catch (error) {
+            console.error("Message failed:", error);
+            alert("Failed to get a response from the chatbot.");
+        }
+    }
+
+    async function uploadImage() {
+    let imageInput = document.getElementById("imageUpload");
+    let imageType = document.getElementById("imageType").value;
+    let file = imageInput.files[0];
+
+    if (!file) {
+        alert("Please select an image first.");
+        return;
+    }
+
+    let formData = new FormData();
+    formData.append("image", file);
+    formData.append("image_type", imageType);
+
+    try {
+        let response = await fetch("/conversation/upload-image/", {
+            method: "POST",
+            body: formData
+        });
+
+        if (!response.ok) {
+            throw new Error(`Server responded with status: ${response.status}`);
+        }
+
+        let data = await response.json(); // ✅ Only parse JSON if response is OK
+        let chatBox = document.getElementById("chatBox");
+
+        chatBox.innerHTML += `<p><b>Image Type:</b> ${data.image_analysis?.image_type || "Unknown"}</p>`;
+        chatBox.innerHTML += `<p><b>Primary Analysis:</b> ${data.image_analysis?.primary_prediction?.label || "N/A"} 
+        (${(data.image_analysis?.primary_prediction?.probability * 100 || 0).toFixed(2)}% confidence)</p>`;
+        chatBox.innerHTML += `<p><b>Medical Recommendation:</b> ${data.medical_recommendation || "No recommendation available."}</p>`;
+        chatBox.innerHTML += `<p><b>AI Interpretation:</b> ${data.ai_interpretation || "No interpretation available."}</p>`;
+
+        speakText(data.ai_interpretation || "No AI interpretation available."); // ✅ Avoid undefined text
+
+    } catch (error) {
+        console.error("Upload failed:", error);
+        alert(`Image upload failed: ${error.message}`);
+    }
+}
+    function speakText(text) {
+        let speech = new SpeechSynthesisUtterance(text);
+        speech.lang = "en-US";
+        window.speechSynthesis.speak(speech);
+    }
+
+    function startListening() {
+        let recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
+        recognition.lang = "en-US";
+        recognition.start();
+
+        recognition.onresult = function(event) {
+            let spokenText = event.results[0][0].transcript;
+            document.getElementById("userMessage").value = spokenText;
+            sendMessage();
+        };
+
+        recognition.onerror = function(event) {
+            console.error("Speech recognition error:", event.error);
+            alert("Could not understand, please try again.");
+        };
+    }
+    </script>
+</body>
+</html>
