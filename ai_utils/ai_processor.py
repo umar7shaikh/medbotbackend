@@ -1,5 +1,6 @@
 import os
 import requests
+import re
 from dotenv import load_dotenv
 from django.conf import settings
 
@@ -17,6 +18,24 @@ class AIPromptProcessor:
         self.api_key = api_key or settings.GROQ_API_KEY  # ✅ Load from Django settings
         self.base_url = "https://api.groq.com/openai/v1/chat/completions"  # ✅ Corrected URL
 
+    def _sanitize_response(self, text):
+        """
+        Sanitize AI response to remove unwanted special characters
+        
+        Args:
+            text (str): Raw AI response
+            
+        Returns:
+            str: Sanitized response
+        """
+        # Remove control characters and other problematic special characters
+        sanitized = re.sub(r'[\x00-\x1F\x7F-\x9F]', '', text)
+        # Replace multiple spaces with single space
+        sanitized = re.sub(r'\s+', ' ', sanitized)
+        # Remove any HTML/XML tags that might have been generated
+        sanitized = re.sub(r'<[^>]+>', '', sanitized)
+        return sanitized.strip()
+
     def generate_prompt(self, context, query, max_tokens=300):
         """
         Generate AI response using Groq's Mixtral model
@@ -33,11 +52,19 @@ class AIPromptProcessor:
             return "AI Error: Missing API key!"
 
         try:
+            # Enhance system prompt to strictly restrict to medical topics
+            system_prompt = """
+            You are a helpful medical assistant. Provide concise, accurate, and empathetic responses 
+            ONLY to medical queries. If a question is not related to medicine, health, wellness, 
+            or healthcare, politely decline to answer and explain that you're a medical assistant
+            only trained to help with health-related questions.
+            """
+            
             payload = {
                 "messages": [
                     {
                         "role": "system", 
-                        "content": "You are a helpful medical assistant. Provide concise, accurate, and empathetic responses."
+                        "content": system_prompt
                     },
                     {
                         "role": "user", 
@@ -59,7 +86,7 @@ class AIPromptProcessor:
             if response.status_code == 200:
                 result = response.json()
                 ai_response = result['choices'][0]['message']['content']
-                return ai_response
+                return self._sanitize_response(ai_response)  # Apply sanitization
             else:
                 print(f"AI API Error: {response.text}")
                 return f"AI Error: {response.json().get('error', {}).get('message', 'Unknown error')}"

@@ -229,3 +229,147 @@ def process_conversation(request):
     except Exception as e:
 
         return JsonResponse({"error": "An error occurred while processing your request"}, status=500)
+    
+
+
+@csrf_exempt
+def unified_chatbot_handler(request):
+    """
+    Unified endpoint for handling all types of medical queries:
+    1. Text only
+    2. Voice only (converted to text)
+    3. Image only
+    4. Text + Image
+    5. Voice + Image
+    
+    Returns AI response based on all available inputs.
+    """
+    try:
+        # Initialize processors
+        ai_processor = AIPromptProcessor(api_key=settings.GROQ_API_KEY)
+        speech_processor = SpeechProcessor()
+        image_analyzer = MedicalImageAnalyzer()
+        
+        # Variables to store different input types
+        text_query = None
+        voice_transcript = None
+        image_caption = None
+        
+        # Process text input (form-data or JSON)
+        if request.POST.get('text'):
+            text_query = request.POST.get('text')
+        elif request.body:
+            try:
+                json_data = json.loads(request.body)
+                text_query = json_data.get('query', '')
+            except json.JSONDecodeError:
+                pass  # Not JSON data, continue checking other inputs
+        
+        # Process voice input if available
+        if 'audio' in request.FILES or 'voice' in request.FILES:
+            audio_file = request.FILES.get('audio') or request.FILES.get('voice')
+            voice_transcript = speech_processor.speech_to_text(audio_file=audio_file)
+        
+        # Process image if available
+        if 'image' in request.FILES:
+            image_file = request.FILES.get('image')
+            image = Image.open(image_file)
+            analysis_result = image_analyzer.analyze_medical_image(image)
+            
+            if 'caption' in analysis_result:
+                image_caption = analysis_result['caption']
+        
+        # Combine all inputs into a comprehensive query
+        final_query = ""
+        
+        # Add text query if available
+        if text_query and text_query.strip():
+            final_query += text_query.strip()
+        
+        # Add voice transcript if available
+        if voice_transcript and not text_query:  # Only use voice if no text input
+            final_query += voice_transcript
+        
+        # Add image caption to the query if available
+        if image_caption:
+            if final_query:
+                final_query += f"\n\nThe uploaded medical image shows: {image_caption}"
+            else:
+                final_query = f"Please analyze this medical image description: {image_caption}"
+        
+        # Verify we have a query to process
+        if not final_query.strip():
+            return JsonResponse({
+                "error": "No valid input provided. Please provide text, voice, or image."
+            }, status=400)
+        
+        # Medical context for better responses
+        context = (
+            "You are a professional AI medical assistant. "
+            "Your goal is to provide accurate, medically relevant answers in simple terms. "
+            "If symptoms are serious, advise consulting a doctor. Do NOT give misleading or harmful advice."
+        )
+        
+        # Generate AI response
+        ai_response = ai_processor.generate_prompt(
+            context=context,
+            query=f"Patient's information: {final_query}\n\nMedical AI Response:"
+        )
+        
+        # If input included voice, generate speech output
+        audio_url = None
+        if voice_transcript:
+            audio_path = speech_processor.text_to_speech(ai_response)
+            if audio_path:
+                audio_url = request.build_absolute_uri(f"/media/{audio_path}")
+        
+        # Create response with all relevant information
+        response_data = {
+            "ai_response": ai_response,
+            "audio_url": audio_url
+        }
+        
+        # Add input data for debugging/confirmation
+        if text_query:
+            response_data["text_input"] = text_query
+        if voice_transcript:
+            response_data["voice_transcript"] = voice_transcript
+        if image_caption:
+            response_data["image_caption"] = image_caption
+        
+        # Save conversation if user is authenticated
+        if request.user.is_authenticated:
+            conversation = Conversation.objects.create(user=request.user)
+            
+            # Save user message
+            user_content = text_query or voice_transcript or f"[Image analysis: {image_caption}]"
+            Message.objects.create(
+                conversation=conversation,
+                content=user_content,
+                sender='user'
+            )
+            
+            # Save AI response
+            Message.objects.create(
+                conversation=conversation,
+                content=ai_response,
+                sender='ai'
+            )
+            
+            # Save image if provided
+            if 'image' in request.FILES:
+                MedicalImage.objects.create(
+                    conversation=conversation,
+                    image=request.FILES['image'],
+                    analysis_result=image_caption
+                )
+            
+            response_data["conversation_id"] = conversation.id
+        
+        return JsonResponse(response_data)
+        
+    except Exception as e:
+        print(f"Unified chatbot error: {str(e)}")
+        return JsonResponse({"error": str(e)}, status=500)   
+    
+
