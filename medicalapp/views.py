@@ -192,7 +192,6 @@ def upload_medical_image(request):
     except Exception as e:
         print(f"Image upload error: {str(e)}")
         return JsonResponse({"error": str(e)}, status=500)
-
 @csrf_exempt
 @require_POST
 def process_conversation(request):
@@ -209,23 +208,25 @@ def process_conversation(request):
         # Initialize AI Processor
         ai_processor = AIPromptProcessor(api_key=settings.GROQ_API_KEY)
 
-        # Define a medical-specific prompt
+        # Updated doctor-style prompt
         context = (
-            "You are a professional AI medical assistant. "
-            "Your goal is to provide accurate, medically relevant answers in simple terms. "
-            "If symptoms are serious, advise consulting a doctor. Do NOT give misleading or harmful advice."
+            "You are Doctor AI, a highly knowledgeable and helpful medical assistant. "
+            "When a patient describes a symptom, you must:\n"
+            "1. First provide possible causes in simple medical terms.\n"
+            "2. Suggest safe home remedies or over-the-counter treatment if symptoms are mild.\n"
+            "3. List other related symptoms the user should watch for.\n"
+            "4. At the end, ask 1-2 clarifying questions to narrow down the condition (if needed).\n\n"
+            "Always speak calmly, clearly, and professionally. If symptoms may be serious, advise seeing a real doctor. "
+            "Do not make jokes or casual assumptions. Never provide misleading or harmful advice. "
+            "Keep it short, medically accurate, and easy to understand."
         )
 
-        # Generate AI response with proper context
         ai_response = ai_processor.generate_prompt(
-            context=context, 
-            query=f"Patient's concern: {query}\n\nMedical AI Response:"
+            context=context,
+            query=f"Patient's concern: {query}\n\nDoctor AI Response:"
         )
-
-        # Log the response for debuggin
 
         return JsonResponse({"ai_response": ai_response})
 
     except Exception as e:
-
         return JsonResponse({"error": "An error occurred while processing your request"}, status=500)
