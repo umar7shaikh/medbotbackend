@@ -11,4 +11,5 @@ urlpatterns = [
     path('conversation/upload-image/', views.upload_medical_image, name='upload_medical_image'),
     path('conversation/process/', views.process_conversation, name='process_conversation'),
     path('chatbot/query/', views.unified_chatbot_handler, name='unified_chatbot'),
+    path('conversations/manage/', views.manage_conversations, name='manage_conversations'),
 ]

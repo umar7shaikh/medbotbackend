@@ -1,5 +1,8 @@
 # chatbot_handler.py
 import logging
+import json
+from datetime import datetime
+import time
 from django.conf import settings
 from django.core.files.storage import default_storage
 from django.core.files.base import ContentFile
@@ -19,7 +22,15 @@ class ChatbotHandler:
         self.ai_processor = AIPromptProcessor()
         self.speech_processor = SpeechProcessor()
         self.image_analyzer = MedicalImageAnalyzer()
-        self.conversation_context = ""  # Store conversation history
+        
+        # Initialize conversation history as structured format
+        self.conversation_history = []
+        
+        # Maximum number of previous exchanges to include as context
+        self.max_context_exchanges = 5
+        
+        # Maximum context length in characters
+        self.max_context_length = 2000
 
     def _save_image(self, image_data):
         """
@@ -48,6 +59,38 @@ class ChatbotHandler:
         except Exception as e:
             self.logger.error(f"Error saving image: {e}")
             return None
+    
+    def _build_context_from_history(self):
+        """
+        Build context string from conversation history
+        
+        Returns:
+            str: Formatted context for AI
+        """
+        if not self.conversation_history:
+            return ""
+        
+        # Get the most recent exchanges (limited by max_context_exchanges)
+        recent_exchanges = self.conversation_history[-self.max_context_exchanges:]
+        
+        # Build context string
+        context_parts = []
+        total_length = 0
+        
+        # Start from the most recent and go backwards until we hit the length limit
+        for exchange in reversed(recent_exchanges):
+            exchange_text = f"User: {exchange['user']}\nAssistant: {exchange['assistant']}\n\n"
+            exchange_length = len(exchange_text)
+            
+            # Check if adding this exchange would exceed the max length
+            if total_length + exchange_length > self.max_context_length:
+                break
+                
+            context_parts.insert(0, exchange_text)  # Insert at beginning to maintain chronological order
+            total_length += exchange_length
+        
+        # Join all parts and return
+        return "".join(context_parts).strip()
 
     def process_query(self, text=None, voice=None, image=None):
         """
@@ -100,11 +143,17 @@ class ChatbotHandler:
                 "audio": None
             }
         
-        # Process through AI
-        ai_response = self.ai_processor.generate_prompt(self.conversation_context, final_query)
+        # Build context from previous conversation
+        context = self._build_context_from_history()
         
-        # Update conversation context
-        self.conversation_context += f"\nUser: {final_query}\nAssistant: {ai_response}\n"
+        # Process through AI with context
+        ai_response = self.ai_processor.generate_prompt(context, final_query)
+        
+        # Add this exchange to conversation history
+        self.conversation_history.append({
+            "user": final_query,
+            "assistant": ai_response
+        })
         
         # Generate speech if input was voice
         audio_file = None
@@ -118,5 +167,62 @@ class ChatbotHandler:
 
     def reset_conversation(self):
         """Reset the conversation context"""
-        self.conversation_context = ""
+        self.conversation_history = []
         return {"status": "conversation reset"}
+    
+    def save_conversation(self, user_id=None):
+        """
+        Save the current conversation to a file
+        
+        Args:
+            user_id (str, optional): User identifier
+            
+        Returns:
+            str: Path to saved file
+        """
+        if not self.conversation_history:
+            return None
+            
+        try:
+            # Create a conversation record with metadata
+            conversation_data = {
+                "user_id": user_id or "anonymous",
+                "timestamp": str(datetime.now()),
+                "exchanges": self.conversation_history
+            }
+            
+            # Generate filename
+            filename = f"conversation_{user_id or 'anonymous'}_{int(time.time())}.json"
+            
+            # Save to file
+            file_path = default_storage.save(
+                f'conversations/{filename}',
+                ContentFile(json.dumps(conversation_data, indent=2))
+            )
+            
+            return file_path
+            
+        except Exception as e:
+            self.logger.error(f"Error saving conversation: {e}")
+            return None
+    
+    def load_conversation(self, file_path):
+        """
+        Load a conversation from a file
+        
+        Args:
+            file_path (str): Path to conversation file
+            
+        Returns:
+            bool: Success status
+        """
+        try:
+            with default_storage.open(file_path, 'r') as f:
+                conversation_data = json.loads(f.read())
+                
+            self.conversation_history = conversation_data.get("exchanges", [])
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Error loading conversation: {e}")
+            return False
