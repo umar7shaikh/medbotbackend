@@ -573,3 +573,210 @@ def manage_conversations(request):
             return JsonResponse({"error": str(e)}, status=500)
     
     return JsonResponse({"error": "Method not allowed"}, status=405)
+
+
+
+
+# Add to medicalapp/views.py
+from rest_framework import viewsets, status
+from rest_framework.decorators import action
+from rest_framework.response import Response
+from .models import Medication, MedicationLog
+from .serializers import MedicationSerializer, MedicationLogSerializer
+from django.contrib.auth.decorators import login_required
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.authentication import TokenAuthentication, SessionAuthentication
+from datetime import datetime, date, timedelta
+
+# Medication viewset for RESTful API
+class MedicationViewSet(viewsets.ModelViewSet):
+    serializer_class = MedicationSerializer
+    # authentication_classes = [TokenAuthentication, SessionAuthentication]
+    # permission_classes = [IsAuthenticated]
+    
+    def get_queryset(self):
+        # Since we're removing authentication, we need to handle unauthenticated users
+        if self.request.user.is_authenticated:
+            return Medication.objects.filter(user=self.request.user).order_by('next_dose')
+        else:
+            # Return all medications or an empty queryset for unauthenticated users
+            # For development purposes, you might want to return all medications
+            return Medication.objects.all().order_by('next_dose')
+    
+    def perform_create(self, serializer):
+        from django.contrib.auth.models import User
+        default_user = User.objects.first()  # Get the first user in database
+        serializer.save(user=default_user)
+    
+    @action(detail=True, methods=['post'])
+    def mark_as_taken(self, request, pk=None):
+        medication = self.get_object()
+        medication.status = 'taken'
+        medication.save()
+        
+        # Create a log entry
+        MedicationLog.objects.create(
+            medication=medication,
+            taken_at=timezone.now(),
+            status='taken',
+            notes=request.data.get('notes', '')
+        )
+        
+        return Response({
+            'status': 'success',
+            'message': 'Medication marked as taken',
+            'medication': MedicationSerializer(medication).data
+        })
+    
+    @action(detail=False, methods=['get'])
+    def today(self, request):
+        """Get all medications due today"""
+         # Get today's date
+        today = timezone.now().date()
+    
+         # Get all medications regardless of status (not just 'upcoming')
+         # This ensures medications remain visible after being marked as taken
+        today_meds = self.get_queryset()
+    
+        # You can add additional filtering if needed, like:
+        # today_meds = today_meds.filter(next_dose_date=today)
+        # But for simplicity, we're showing all medications
+        
+        serializer = self.get_serializer(today_meds, many=True)
+        return Response(serializer.data)
+    
+    @action(detail=False, methods=['get'])
+    def stats(self, request):
+        """Get medication statistics"""
+        queryset = self.get_queryset()
+        total = queryset.count()
+        upcoming = queryset.filter(status='upcoming').count()
+        taken = queryset.filter(status='taken').count()
+        missed = queryset.filter(status='missed').count()
+        
+        # Calculate refill reminders
+        today = date.today()
+        refill_soon = queryset.filter(refill_date__lte=today + timedelta(days=7)).count()
+        
+        return Response({
+            'total': total,
+            'upcoming': upcoming,
+            'taken': taken,
+            'missed': missed,
+            'refill_soon': refill_soon
+        })
+
+# Medication logs viewset
+class MedicationLogViewSet(viewsets.ReadOnlyModelViewSet):
+    serializer_class = MedicationLogSerializer
+    # authentication_classes = [TokenAuthentication, SessionAuthentication]
+    # permission_classes = [IsAuthenticated]
+    
+    def get_queryset(self):
+        return MedicationLog.objects.all().order_by('-taken_at')    
+
+# JSON API for medication management
+@csrf_exempt
+@login_required
+def medication_api(request):
+    """Handle medication CRUD operations"""
+    if request.method == "GET":
+        medications = Medication.objects.all()
+        data = []
+        for med in medications:
+            data.append({
+                "id": med.id,
+                "name": med.name,
+                "instructions": med.instructions,
+                "next_dose": med.next_dose.strftime("%H:%M"),
+                "refill_date": med.refill_date.strftime("%Y-%m-%d"),
+                "remaining": med.remaining,
+                "status": med.status
+            })
+        return JsonResponse({"medications": data})
+    
+    elif request.method == "POST":
+        try:
+            data = json.loads(request.body)
+            
+            # Create new medication
+            medication = Medication.objects.create(
+                user=request.user,
+                name=data.get("name"),
+                instructions=data.get("instructions"),
+                next_dose=datetime.strptime(data.get("next_dose"), "%H:%M").time(),
+                refill_date=datetime.strptime(data.get("refill_date"), "%Y-%m-%d").date(),
+                remaining=data.get("remaining"),
+                status=data.get("status", "upcoming")
+            )
+            
+            return JsonResponse({
+                "message": "Medication added successfully",
+                "medication_id": medication.id
+            })
+            
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=400)
+    
+    elif request.method == "PUT":
+        try:
+            data = json.loads(request.body)
+            medication_id = data.get("id")
+            
+            if not medication_id:
+                return JsonResponse({"error": "Medication ID required"}, status=400)
+            
+            # Get medication and verify ownership
+            medication = Medication.objects.get(id=medication_id, user=request.user)
+            
+            # Update fields
+            if "name" in data:
+                medication.name = data["name"]
+            if "instructions" in data:
+                medication.instructions = data["instructions"]
+            if "next_dose" in data:
+                medication.next_dose = datetime.strptime(data["next_dose"], "%H:%M").time()
+            if "refill_date" in data:
+                medication.refill_date = datetime.strptime(data["refill_date"], "%Y-%m-%d").date()
+            if "remaining" in data:
+                medication.remaining = data["remaining"]
+            if "status" in data:
+                medication.status = data["status"]
+                
+                # Create log entry if status changed to taken
+                if data["status"] == "taken":
+                    MedicationLog.objects.create(
+                        medication=medication,
+                        status="taken",
+                        notes=data.get("notes", "")
+                    )
+            
+            medication.save()
+            
+            return JsonResponse({"message": "Medication updated successfully"})
+            
+        except Medication.DoesNotExist:
+            return JsonResponse({"error": "Medication not found"}, status=404)
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=400)
+    
+    elif request.method == "DELETE":
+        try:
+            data = json.loads(request.body)
+            medication_id = data.get("id")
+            
+            if not medication_id:
+                return JsonResponse({"error": "Medication ID required"}, status=400)
+            
+            # Get medication and verify ownership
+            medication = Medication.objects.get(id=medication_id, user=request.user)
+            medication.delete()
+            
+            return JsonResponse({"message": "Medication deleted successfully"})
+            
+        except Medication.DoesNotExist:
+            return JsonResponse({"error": "Medication not found"}, status=404)
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=400)
+    
+    return JsonResponse({"error": "Method not allowed"}, status=405)

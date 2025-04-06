@@ -1,7 +1,16 @@
 app_name = "medicalapp"
 
-from django.urls import path
+
+from rest_framework.routers import DefaultRouter
+from .views import MedicationViewSet, MedicationLogViewSet
+from django.urls import path,include
 from . import views
+
+
+# Create router for REST framework
+router = DefaultRouter()
+router.register(r'medications', MedicationViewSet, basename='medication')
+router.register(r'medication-logs', MedicationLogViewSet, basename='medication-log')
 
 urlpatterns = [
     path('login/', views.login_view, name='login'), 
@@ -12,4 +21,6 @@ urlpatterns = [
     path('conversation/process/', views.process_conversation, name='process_conversation'),
     path('chatbot/query/', views.unified_chatbot_handler, name='unified_chatbot'),
     path('conversations/manage/', views.manage_conversations, name='manage_conversations'),
+    path('api/', include(router.urls)),
+    path('api/medication-management/', views.medication_api, name='medication_api'),
 ]
