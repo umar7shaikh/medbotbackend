@@ -1,4 +1,3 @@
-# ai_utils/speech_processor.py
 import os
 import json
 import wave
@@ -11,11 +10,13 @@ from django.conf import settings
 from django.core.files.storage import default_storage
 from django.core.files.base import ContentFile
 import subprocess
+import tempfile
+from gtts import gTTS
 
 class SpeechProcessor:
     def __init__(self):
         """
-        Initialize STT (Vosk) and TTS (Edge TTS)
+        Initialize STT (Vosk) and TTS (gTTS)
         """
         self.logger = logging.getLogger(__name__)
         self.recognizer = sr.Recognizer()
@@ -69,20 +70,30 @@ class SpeechProcessor:
             self.logger.error(f"STT API Error: {e}")
             return None
 
-    def text_to_speech(self, text):
+    def text_to_speech(self, text, lang='en', tld='com'):
         """
-        Convert text to speech using Edge TTS
+        Convert text to speech using Google Text-to-Speech (gTTS)
 
         Args:
             text (str): Text to convert
+            lang (str): Language code (default: 'en')
+            tld (str): Top-level domain for the Google TTS service (default: 'com')
+                       Options include: 'com', 'co.uk', 'com.au', etc.
 
         Returns:
             str: Path to generated audio file
         """
         try:
-            tts_command = f'edge-tts --text "{text}" --voice "en-US-JennyNeural" --write-media output.mp3'
-            subprocess.run(tts_command, shell=True, check=True)
-            return "output.mp3"  # Return the path to the audio file
+            # Output file path
+            output_path = "output.mp3"
+            
+            # Create gTTS object
+            tts = gTTS(text=text, lang=lang, tld=tld, slow=False)
+            
+            # Save to file
+            tts.save(output_path)
+            
+            return output_path
 
         except Exception as e:
             self.logger.error(f"TTS Error: {e}")

@@ -39,7 +39,6 @@ INSTALLED_APPS = [
     
     # Local Apps
     'medicalapp.apps.MedicalappConfig',
-    'fastapi_app',
     # Django REST Framework
     'rest_framework',
     'rest_framework.authtoken',

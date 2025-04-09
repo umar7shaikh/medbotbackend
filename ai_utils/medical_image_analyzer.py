@@ -18,16 +18,23 @@ class MedicalImageAnalyzer:
         Analyze an image using BLIP image captioning model.
 
         Args:
-            image (PIL.Image): The uploaded medical image
+            image (PIL.Image or file-like object): The uploaded medical image
 
         Returns:
             dict: Caption (text-based description) of the image
         """
         try:
-            # Check if API key is available
-            if not self.api_key:
-                return {"error": "API key not configured in Django settings"}
-                
+            # Handle both PIL Image and file-like objects
+            if not isinstance(image, Image.Image):
+                try:
+                    # Make sure to reset file pointer to start if it's a file
+                    if hasattr(image, 'seek'):
+                        image.seek(0)
+                    image = Image.open(image)
+                except Exception as e:
+                    self.logger.error(f"Failed to open image: {e}")
+                    return {"error": f"Failed to process image: {str(e)}"}
+
             # Convert image to binary format
             buffered = BytesIO()
             image.save(buffered, format="JPEG")
@@ -42,7 +49,7 @@ class MedicalImageAnalyzer:
                 "Content-Type": "application/octet-stream"  # Important for binary data
             }
             
-            # Send raw image bytes in request body instead of using 'files' parameter
+            # Send raw image bytes in request body
             response = requests.post(
                 self.api_url,
                 headers=headers,
