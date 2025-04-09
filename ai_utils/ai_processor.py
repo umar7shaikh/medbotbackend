@@ -99,7 +99,7 @@ class AIPromptProcessor:
         # Default to letting the AI decide (will be filtered by system prompt)
         return True
 
-    def generate_prompt(self, context, query, max_tokens=300):
+    def generate_prompt(self, context, query, max_tokens=1000):
         """
         Generate AI response using Groq's Mixtral model
         

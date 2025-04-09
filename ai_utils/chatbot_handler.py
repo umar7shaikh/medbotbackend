@@ -8,6 +8,7 @@ from django.core.files.storage import default_storage
 from django.core.files.base import ContentFile
 from PIL import Image
 from io import BytesIO
+import os
 
 from .ai_processor import AIPromptProcessor
 from .speech_processor import SpeechProcessor
@@ -106,63 +107,76 @@ class ChatbotHandler:
         """
         text_query = ""
         image_description = ""
-        
-        # Case 1 & 4: Process text input if available
-        if text:
-            text_query = text
-        
-        # Case 2 & 5: Process voice input if available
+        detected_language = "en"  # Default language
+
+        # Process voice input if available
         if voice and not text:
             # Save voice temporarily
-            voice_path = default_storage.save(f'temp_audio/input_{hash(str(voice))}.wav', ContentFile(voice.read()))
-            # Convert speech to text
-            text_query = self.speech_processor.speech_to_text(voice_path) or "Could not understand audio"
+            voice_path = default_storage.save(f'temp_audio/input_{abs(hash(str(voice)))}.wav', ContentFile(voice.read()))
+            
+            # Get full path to the file
+            full_voice_path = os.path.join(settings.MEDIA_ROOT, voice_path)
+            
+            # Convert speech to text and get the detected language
+            speech_result = self.speech_processor.speech_to_text(full_voice_path)
+            
+            if speech_result:
+                text_query = speech_result.get('text', '')
+                detected_language = speech_result.get('language', 'en')
+            else:
+                text_query = "Could not understand audio"
+            
             # Clean up temp file
             default_storage.delete(voice_path)
-        
-        # Case 3, 4 & 5: Process image if available
+
+        # Process text input if available
+        if text:
+            text_query = text
+
+        # Process image input if available
         if image:
-            # Analyze image
+            # Analyze the image
             image_result = self.image_analyzer.analyze_medical_image(Image.open(image))
             image_description = image_result.get('caption', image_result.get('error', 'No image description available'))
-        
-        # Combine inputs for final query
+
+        # Combine text and image description into final query
         final_query = text_query
-        
-        # Add image description to query if available
+
         if image_description:
             if final_query:
                 final_query += f"\n\nThe medical image shows: {image_description}"
             else:
                 final_query = f"Please analyze this medical image: {image_description}"
-        
+
         # If no query could be formed, provide error message
         if not final_query:
             return {
                 "text": "I couldn't process your request. Please provide text, voice, or an image to analyze.",
-                "audio": None
+                "audio": None,
+                "detected_language": detected_language
             }
-        
+
         # Build context from previous conversation
         context = self._build_context_from_history()
-        
+
         # Process through AI with context
         ai_response = self.ai_processor.generate_prompt(context, final_query)
-        
+
         # Add this exchange to conversation history
         self.conversation_history.append({
             "user": final_query,
             "assistant": ai_response
         })
-        
-        # Generate speech if input was voice
+
+        # Generate speech in the detected language if input was voice
         audio_file = None
         if voice:
-            audio_file = self.speech_processor.text_to_speech(ai_response)
-        
+            audio_file = self.speech_processor.text_to_speech(ai_response, lang=detected_language)
+
         return {
             "text": ai_response,
-            "audio": audio_file
+            "audio": audio_file,
+            "detected_language": detected_language  # Optional: return detected language
         }
 
     def reset_conversation(self):

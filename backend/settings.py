@@ -137,3 +137,8 @@ REST_FRAMEWORK = {
         'rest_framework.permissions.AllowAny',
     ]
 }
+
+
+# Whisper configuration
+WHISPER_MODEL_SIZE = 'small'  # Options: 'tiny', 'base', 'small', 'medium', 'large-v2'
+WHISPER_DEVICE = 'cuda'  # Use 'cuda' for your GTX 1650 Ti

@@ -161,44 +161,97 @@ def start_conversation(request):
 
     return JsonResponse({"error": "Only POST method allowed"}, status=405)
 
-def process_voice_message(request, conversation_id):
-    if request.method == 'POST':
-        # Use the speech processor to convert speech to text
-        speech_proc = SpeechProcessor()
-        text = speech_proc.speech_to_text(audio_file=request.FILES.get('audio'))
+@csrf_exempt
+def process_voice_message(request):
+    """
+    Process voice recording and return transcription with AI response
+    """
+    if request.method != 'POST':
+        return JsonResponse({"error": "Only POST method allowed"}, status=405)
         
-        if text:
-            # Save user message
-            conversation = Conversation.objects.get(id=conversation_id)
-            user_message = Message.objects.create(
+    try:
+        # Initialize speech processor
+        speech_proc = SpeechProcessor()
+        
+        # Check if audio file is provided
+        if 'audio' not in request.FILES:
+            return JsonResponse({"error": "No audio file provided"}, status=400)
+            
+        # Get language parameter (default to None for auto-detection)
+        language = request.POST.get('language')
+        
+        # Process speech to text
+        text = speech_proc.speech_to_text(
+            audio_file=request.FILES.get('audio'),
+            language=language
+        )
+        
+        if not text:
+            return JsonResponse({"error": "No speech detected or could not recognize speech"}, status=400)
+            
+        # Process with AI
+        ai_proc = AIPromptProcessor(api_key=settings.GROQ_API_KEY)
+        
+        # Get conversation context if conversation_id is provided
+        conversation_id = request.POST.get('conversation_id')
+        conversation_context = ""
+        conversation = None
+        
+        if conversation_id and request.user.is_authenticated:
+            try:
+                conversation = Conversation.objects.get(id=conversation_id, user=request.user)
+                previous_messages = conversation.messages.order_by('-timestamp')[:5]
+                
+                if previous_messages:
+                    conversation_context = "Previous conversation:\n"
+                    for msg in reversed(previous_messages):
+                        conversation_context += f"{'Patient' if msg.sender == 'user' else 'Doctor'}: {msg.content}\n"
+            except Conversation.DoesNotExist:
+                # Create new conversation if it doesn't exist
+                if request.user.is_authenticated:
+                    conversation = Conversation.objects.create(user=request.user)
+        
+        # Generate AI response
+        ai_response = ai_proc.generate_prompt(conversation_context, text)
+        
+        # Save messages if conversation exists
+        if conversation:
+            Message.objects.create(
                 conversation=conversation,
                 content=text,
                 sender='user'
             )
             
-            # Process with AI - use settings API key
-            ai_proc = AIPromptProcessor(api_key=settings.GROQ_API_KEY)
-            context = " ".join(conversation.messages.values_list('content', flat=True)[:5])
-            ai_response = ai_proc.generate_prompt(context, text)
-            
-            # Rest of the code...
-            
-            # Save AI message
-            ai_message = Message.objects.create(
+            Message.objects.create(
                 conversation=conversation,
                 content=ai_response,
                 sender='ai'
             )
             
-            # Optional: Convert AI response to speech
-            speech_proc.text_to_speech(ai_response)
-            
-            return JsonResponse({
-                'user_message': text,
-                'ai_response': ai_response
-            })
+            # Include conversation_id in response
+            response_data = {
+                "user_message": text,
+                "ai_response": ai_response,
+                "conversation_id": conversation.id
+            }
+        else:
+            response_data = {
+                "user_message": text,
+                "ai_response": ai_response
+            }
         
-        return JsonResponse({'error': 'No speech detected'}, status=400)
+        # Optional: Generate audio response
+        audio_path = speech_proc.text_to_speech(ai_response)
+        if audio_path:
+            response_data["audio_url"] = request.build_absolute_uri(f"/media/{audio_path}")
+        
+        return JsonResponse(response_data)
+        
+    except Exception as e:
+        import traceback
+        print(f"Voice processing error: {str(e)}")
+        print(traceback.format_exc())
+        return JsonResponse({"error": f"Server error: {str(e)}"}, status=500)
     
 @csrf_exempt
 def upload_medical_image(request):
