@@ -13,8 +13,13 @@ from django.contrib.auth import authenticate, login
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 import json
-from ai_utils.ai_processor import AIPromptProcessor  # Correct import path
-from ai_utils.speech_processor import SpeechProcessor  # Assuming this exists
+from ai_utils.ai_processor import AIPromptProcessor
+from ai_utils.speech_processor import SpeechProcessor
+from django.contrib.auth.models import User  # Add this import
+
+# Helper function to get default user
+def get_default_user():
+    return User.objects.first()  # Get the first user in the database
 
 @csrf_exempt
 def login_view(request):
@@ -33,24 +38,21 @@ def login_view(request):
                 return JsonResponse({
                     "message": "Login successful",
                     "user": user.username,
-                    "sessionid": request.session.session_key  # ✅ Send session ID
+                    "sessionid": request.session.session_key
                 })
             else:
                 return JsonResponse({"error": "Invalid credentials"}, status=400)
         except json.JSONDecodeError:
             return JsonResponse({"error": "Invalid JSON format"}, status=400)
 
-    # ✅ Serve an HTML page when accessed via GET
     return render(request, "medicalapp/login.html")
-
 
 load_dotenv()
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-
 # Initialize AI and Speech Processors
-ai_processor = AIPromptProcessor(api_key=settings.GROQ_API_KEY)  # ✅ Pass API key correctly
+ai_processor = AIPromptProcessor(api_key=settings.GROQ_API_KEY)
 speech_processor = SpeechProcessor()
 
 def chatbot_ui(request):
@@ -70,16 +72,17 @@ def start_conversation(request):
             data = json.loads(request.body) if request.body else {}
             conversation_id = data.get('conversation_id')
             
-            # Get or create conversation if user is authenticated
+            # Get or create conversation with default user
             conversation = None
-            if request.user.is_authenticated:
-                if conversation_id:
-                    try:
-                        conversation = Conversation.objects.get(id=conversation_id, user=request.user)
-                    except Conversation.DoesNotExist:
-                        conversation = Conversation.objects.create(user=request.user)
-                else:
-                    conversation = Conversation.objects.create(user=request.user)
+            default_user = get_default_user()
+            
+            if conversation_id:
+                try:
+                    conversation = Conversation.objects.get(id=conversation_id)
+                except Conversation.DoesNotExist:
+                    conversation = Conversation.objects.create(user=default_user)
+            else:
+                conversation = Conversation.objects.create(user=default_user)
 
             # Build conversation context
             conversation_context = ""
@@ -98,19 +101,18 @@ def start_conversation(request):
                 if transcript:
                     ai_response = ai_processor.generate_prompt(conversation_context, transcript)
                     
-                    # Save conversation if exists
-                    if conversation:
-                        Message.objects.create(
-                            conversation=conversation,
-                            content=transcript,
-                            sender='user'
-                        )
-                        
-                        Message.objects.create(
-                            conversation=conversation,
-                            content=ai_response,
-                            sender='ai'
-                        )
+                    # Save conversation
+                    Message.objects.create(
+                        conversation=conversation,
+                        content=transcript,
+                        sender='user'
+                    )
+                    
+                    Message.objects.create(
+                        conversation=conversation,
+                        content=ai_response,
+                        sender='ai'
+                    )
                     
                     # Convert AI response to speech
                     audio_path = speech_processor.text_to_speech(ai_response)
@@ -118,12 +120,10 @@ def start_conversation(request):
                     response_data = {
                         "ai_response": ai_response,
                         "transcript": transcript,
-                        "audio_url": request.build_absolute_uri(f"/media/{audio_path}")
+                        "audio_url": request.build_absolute_uri(f"/media/{audio_path}"),
+                        "conversation_id": conversation.id
                     }
                     
-                    if conversation:
-                        response_data["conversation_id"] = conversation.id
-                        
                     return JsonResponse(response_data)
 
                 return JsonResponse({"error": "Speech not recognized"}, status=400)
@@ -133,24 +133,23 @@ def start_conversation(request):
                 user_query = data["query"]
                 ai_response = ai_processor.generate_prompt(conversation_context, user_query)
                 
-                # Save conversation if exists
-                if conversation:
-                    Message.objects.create(
-                        conversation=conversation,
-                        content=user_query,
-                        sender='user'
-                    )
-                    
-                    Message.objects.create(
-                        conversation=conversation,
-                        content=ai_response,
-                        sender='ai'
-                    )
+                # Save conversation
+                Message.objects.create(
+                    conversation=conversation,
+                    content=user_query,
+                    sender='user'
+                )
                 
-                response_data = {"ai_response": ai_response}
+                Message.objects.create(
+                    conversation=conversation,
+                    content=ai_response,
+                    sender='ai'
+                )
                 
-                if conversation:
-                    response_data["conversation_id"] = conversation.id
+                response_data = {
+                    "ai_response": ai_response,
+                    "conversation_id": conversation.id
+                }
                     
                 return JsonResponse(response_data)
 
@@ -172,6 +171,7 @@ def process_voice_message(request):
     try:
         # Initialize speech processor
         speech_proc = SpeechProcessor()
+        default_user = get_default_user()
         
         # Check if audio file is provided
         if 'audio' not in request.FILES:
@@ -179,6 +179,9 @@ def process_voice_message(request):
             
         # Get language parameter (default to None for auto-detection)
         language = request.POST.get('language')
+        
+        # Check if this is a transcription-only request
+        transcription_only = request.POST.get('transcription_only') == 'true'
         
         # Process speech to text
         text = speech_proc.speech_to_text(
@@ -189,7 +192,14 @@ def process_voice_message(request):
         if not text:
             return JsonResponse({"error": "No speech detected or could not recognize speech"}, status=400)
             
-        # Process with AI
+        # If transcription only, return the text without AI processing
+        if transcription_only:
+            return JsonResponse({
+                "user_message": text,
+                "transcription_only": True
+            })
+        
+        # Process with AI for full response
         ai_proc = AIPromptProcessor(api_key=settings.GROQ_API_KEY)
         
         # Get conversation context if conversation_id is provided
@@ -197,9 +207,9 @@ def process_voice_message(request):
         conversation_context = ""
         conversation = None
         
-        if conversation_id and request.user.is_authenticated:
+        if conversation_id:
             try:
-                conversation = Conversation.objects.get(id=conversation_id, user=request.user)
+                conversation = Conversation.objects.get(id=conversation_id)
                 previous_messages = conversation.messages.order_by('-timestamp')[:5]
                 
                 if previous_messages:
@@ -207,38 +217,34 @@ def process_voice_message(request):
                     for msg in reversed(previous_messages):
                         conversation_context += f"{'Patient' if msg.sender == 'user' else 'Doctor'}: {msg.content}\n"
             except Conversation.DoesNotExist:
-                # Create new conversation if it doesn't exist
-                if request.user.is_authenticated:
-                    conversation = Conversation.objects.create(user=request.user)
+                # Create new conversation
+                conversation = Conversation.objects.create(user=default_user)
+        else:
+            # Create new conversation
+            conversation = Conversation.objects.create(user=default_user)
         
         # Generate AI response
         ai_response = ai_proc.generate_prompt(conversation_context, text)
         
-        # Save messages if conversation exists
-        if conversation:
-            Message.objects.create(
-                conversation=conversation,
-                content=text,
-                sender='user'
-            )
-            
-            Message.objects.create(
-                conversation=conversation,
-                content=ai_response,
-                sender='ai'
-            )
-            
-            # Include conversation_id in response
-            response_data = {
-                "user_message": text,
-                "ai_response": ai_response,
-                "conversation_id": conversation.id
-            }
-        else:
-            response_data = {
-                "user_message": text,
-                "ai_response": ai_response
-            }
+        # Save messages
+        Message.objects.create(
+            conversation=conversation,
+            content=text,
+            sender='user'
+        )
+        
+        Message.objects.create(
+            conversation=conversation,
+            content=ai_response,
+            sender='ai'
+        )
+        
+        # Include conversation_id in response
+        response_data = {
+            "user_message": text,
+            "ai_response": ai_response,
+            "conversation_id": conversation.id
+        }
         
         # Optional: Generate audio response
         audio_path = speech_proc.text_to_speech(ai_response)
@@ -259,6 +265,19 @@ def upload_medical_image(request):
     Upload medical image and analyze using Hugging Face API with enhanced AI interpretation.
     """
     try:
+        # Get default user
+        default_user = get_default_user()
+        
+        # Create or get conversation
+        conversation_id = request.POST.get('conversation_id')
+        if conversation_id:
+            try:
+                conversation = Conversation.objects.get(id=conversation_id)
+            except Conversation.DoesNotExist:
+                conversation = Conversation.objects.create(user=default_user)
+        else:
+            conversation = Conversation.objects.create(user=default_user)
+            
         # Get uploaded image
         image_file = request.FILES.get("image")
         if not image_file:
@@ -284,7 +303,7 @@ def upload_medical_image(request):
             return JsonResponse({
                 "error": analysis_result['error'],
                 "ai_interpretation": "Failed to analyze image. Please try again."
-            }, status=500)  # Changed to 500 status to indicate server error
+            }, status=500)
 
         # Extract caption
         image_caption = analysis_result.get("caption", "No description available")
@@ -295,10 +314,18 @@ def upload_medical_image(request):
             "",
             f"Medical Image Description: {image_caption}. Provide a medical assessment and possible treatments."
         )
+        
+        # Save the image to database
+        medical_image = MedicalImage.objects.create(
+            conversation=conversation,
+            image=image_file,
+            analysis_result=json.dumps(analysis_result)
+        )
 
         return JsonResponse({
             "image_caption": image_caption,
-            "ai_interpretation": ai_response
+            "ai_interpretation": ai_response,
+            "conversation_id": conversation.id
         })
 
     except Exception as e:
@@ -316,6 +343,7 @@ def process_conversation(request):
         data = json.loads(request.body)
         query = data.get("query", "").strip()
         conversation_id = data.get("conversation_id")
+        default_user = get_default_user()
 
         if not query:
             return JsonResponse({"error": "Query cannot be empty"}, status=400)
@@ -334,9 +362,9 @@ def process_conversation(request):
         conversation_context = ""
         conversation = None
         
-        if conversation_id and request.user.is_authenticated:
+        if conversation_id:
             try:
-                conversation = Conversation.objects.get(id=conversation_id, user=request.user)
+                conversation = Conversation.objects.get(id=conversation_id)
                 # Get the last 5 messages
                 previous_messages = conversation.messages.order_by('-timestamp')[:5]
                 
@@ -346,7 +374,10 @@ def process_conversation(request):
                         conversation_context += f"{'Patient' if msg.sender == 'user' else 'Doctor'}: {msg.content}\n"
             except Conversation.DoesNotExist:
                 # Create a new conversation
-                conversation = Conversation.objects.create(user=request.user)
+                conversation = Conversation.objects.create(user=default_user)
+        else:
+            # Create new conversation
+            conversation = Conversation.objects.create(user=default_user)
 
         # Generate AI response with combined context
         ai_response = ai_processor.generate_prompt(
@@ -354,50 +385,25 @@ def process_conversation(request):
             query=f"Patient's concern: {query}\n\nMedical AI Response:"
         )
 
-        # Save the conversation messages if conversation exists
-        if conversation:
-            # Save user message
-            Message.objects.create(
-                conversation=conversation,
-                content=query,
-                sender='user'
-            )
-            
-            # Save AI response
-            Message.objects.create(
-                conversation=conversation,
-                content=ai_response,
-                sender='ai'
-            )
-            
-            return JsonResponse({
-                "ai_response": ai_response,
-                "conversation_id": conversation.id
-            })
-        elif request.user.is_authenticated:
-            # Create new conversation if user is authenticated
-            conversation = Conversation.objects.create(user=request.user)
-            
-            # Save messages
-            Message.objects.create(
-                conversation=conversation,
-                content=query,
-                sender='user'
-            )
-            
-            Message.objects.create(
-                conversation=conversation,
-                content=ai_response,
-                sender='ai'
-            )
-            
-            return JsonResponse({
-                "ai_response": ai_response,
-                "conversation_id": conversation.id
-            })
-        else:
-            # No user authentication, just return response
-            return JsonResponse({"ai_response": ai_response})
+        # Save the conversation messages
+        # Save user message
+        Message.objects.create(
+            conversation=conversation,
+            content=query,
+            sender='user'
+        )
+        
+        # Save AI response
+        Message.objects.create(
+            conversation=conversation,
+            content=ai_response,
+            sender='ai'
+        )
+        
+        return JsonResponse({
+            "ai_response": ai_response,
+            "conversation_id": conversation.id
+        })
 
     except Exception as e:
         print(f"Process conversation error: {str(e)}")
@@ -414,6 +420,7 @@ def unified_chatbot_handler(request):
         ai_processor = AIPromptProcessor(api_key=settings.GROQ_API_KEY)
         speech_processor = SpeechProcessor()
         image_analyzer = MedicalImageAnalyzer()
+        default_user = get_default_user()
         
         # Get conversation ID if it exists
         conversation_id = None
@@ -429,6 +436,15 @@ def unified_chatbot_handler(request):
             conversation_id = request.POST.get('conversation_id')
             text_query = request.POST.get('text')
         
+        # Get or create conversation
+        if conversation_id:
+            try:
+                conversation = Conversation.objects.get(id=conversation_id)
+            except Conversation.DoesNotExist:
+                conversation = Conversation.objects.create(user=default_user)
+        else:
+            conversation = Conversation.objects.create(user=default_user)
+            
         # Variables to store different input types
         voice_transcript = None
         image_caption = None
@@ -447,6 +463,13 @@ def unified_chatbot_handler(request):
             
             if 'caption' in analysis_result:
                 image_caption = analysis_result['caption']
+                
+                # Save medical image
+                MedicalImage.objects.create(
+                    conversation=conversation,
+                    image=image_file,
+                    analysis_result=json.dumps(analysis_result)
+                )
             elif 'error' in analysis_result:
                 return JsonResponse({"error": f"Image analysis failed: {analysis_result['error']}"}, status=400)
         
@@ -474,17 +497,29 @@ def unified_chatbot_handler(request):
                 "error": "No valid input provided. Please provide text, voice, or image."
             }, status=400)
         
-        # Rest of the handler remains the same...
-        
         # Generate AI response 
         ai_response = ai_processor.generate_prompt(
             context="You are a professional AI medical assistant.",
             query=f"Patient's information: {final_query}\n\nMedical AI Response:"
         )
         
+        # Save user query and AI response
+        Message.objects.create(
+            conversation=conversation,
+            content=final_query,
+            sender='user'
+        )
+        
+        Message.objects.create(
+            conversation=conversation,
+            content=ai_response,
+            sender='ai'
+        )
+        
         # Create response data
         response_data = {
             "ai_response": ai_response,
+            "conversation_id": conversation.id
         }
         
         if image_caption:
@@ -500,15 +535,16 @@ def unified_chatbot_handler(request):
     
 
 @csrf_exempt
-@login_required
 def manage_conversations(request):
     """
     Get user's conversations or delete a conversation
     """
+    default_user = get_default_user()
+    
     if request.method == "GET":
-        # Get all user conversations
+        # Get all conversations for default user
         conversations = Conversation.objects.filter(
-            user=request.user
+            user=default_user
         ).order_by('-last_interaction')
         
         result = []
@@ -536,8 +572,8 @@ def manage_conversations(request):
             if not conversation_id:
                 return JsonResponse({"error": "Conversation ID required"}, status=400)
                 
-            # Get conversation and ensure it belongs to user
-            conversation = Conversation.objects.get(id=conversation_id, user=request.user)
+            # Get conversation
+            conversation = Conversation.objects.get(id=conversation_id)
             conversation.delete()
             
             return JsonResponse({"message": "Conversation deleted successfully"})
