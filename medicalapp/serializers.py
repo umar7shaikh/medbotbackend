@@ -1,6 +1,11 @@
 # medicalapp/serializers.py
 from rest_framework import serializers
 from .models import Medication, MedicationLog, Conversation, Message, MedicalImage
+from .models import (
+    MedicalSpecialty, Doctor, DoctorAvailability,
+    AppointmentCategory, AppointmentSubcategory, LocationOption, Appointment
+)
+
 
 class MedicationSerializer(serializers.ModelSerializer):
     class Meta:
@@ -25,3 +30,63 @@ class ConversationSerializer(serializers.ModelSerializer):
     class Meta:
         model = Conversation
         fields = ['id', 'start_time', 'last_interaction', 'messages']
+
+
+class MedicalSpecialtySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = MedicalSpecialty
+        fields = '__all__'
+
+
+class DoctorSerializer(serializers.ModelSerializer):
+    specialty_name = serializers.CharField(source='specialty.name', read_only=True)
+    
+    class Meta:
+        model = Doctor
+        fields = ['id', 'name', 'specialty', 'specialty_name', 'bio', 'languages', 'photo', 'is_active']
+
+
+class DoctorAvailabilitySerializer(serializers.ModelSerializer):
+    doctor_name = serializers.CharField(source='doctor.name', read_only=True)
+    
+    class Meta:
+        model = DoctorAvailability
+        fields = ['id', 'doctor', 'doctor_name', 'date', 'start_time', 'end_time', 'is_available']
+
+
+class LocationOptionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = LocationOption
+        fields = ['id', 'name', 'subcategory']
+
+
+class AppointmentSubcategorySerializer(serializers.ModelSerializer):
+    locations = LocationOptionSerializer(many=True, read_only=True)
+    
+    class Meta:
+        model = AppointmentSubcategory
+        fields = ['id', 'name', 'category', 'locations', 'specialties']
+
+
+class AppointmentCategorySerializer(serializers.ModelSerializer):
+    subcategories = AppointmentSubcategorySerializer(many=True, read_only=True)
+    
+    class Meta:
+        model = AppointmentCategory
+        fields = ['id', 'name', 'subcategories', 'specialties']
+
+
+class AppointmentSerializer(serializers.ModelSerializer):
+    doctor_name = serializers.CharField(source='doctor.name', read_only=True)
+    category_name = serializers.CharField(source='category.name', read_only=True)
+    subcategory_name = serializers.CharField(source='subcategory.name', read_only=True)
+    location_name = serializers.CharField(source='location.name', read_only=True, allow_null=True)
+    
+    class Meta:
+        model = Appointment
+        fields = [
+            'id', 'user', 'doctor', 'doctor_name', 'appointment_date', 'appointment_time',
+            'category', 'category_name', 'subcategory', 'subcategory_name',
+            'location', 'location_name', 'patient_name', 'patient_phone',
+            'patient_email', 'status', 'notes', 'created_at'
+        ]

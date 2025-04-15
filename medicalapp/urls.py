@@ -11,6 +11,11 @@ from . import views
 router = DefaultRouter()
 router.register(r'medications', MedicationViewSet, basename='medication')
 router.register(r'medication-logs', MedicationLogViewSet, basename='medication-log')
+router.register(r'medical-specialties', views.MedicalSpecialtyViewSet)
+router.register(r'doctors', views.DoctorViewSet)
+router.register(r'appointment-categories', views.AppointmentCategoryViewSet)
+router.register(r'appointment-subcategories', views.AppointmentSubcategoryViewSet)
+router.register(r'appointments', views.AppointmentViewSet, basename='appointment')
 
 urlpatterns = [
     path('login/', views.login_view, name='login'), 
@@ -23,4 +28,5 @@ urlpatterns = [
     path('conversations/manage/', views.manage_conversations, name='manage_conversations'),
     path('api/', include(router.urls)),
     path('api/medication-management/', views.medication_api, name='medication_api'),
+    path('api/appointment-chatbot/', views.appointment_chatbot, name='appointment-chatbot'),
 ]

@@ -791,3 +791,569 @@ def medication_api(request):
             return JsonResponse({"error": str(e)}, status=400)
     
     return JsonResponse({"error": "Method not allowed"}, status=405)
+
+
+
+# Add these imports to your existing views.py
+from rest_framework import viewsets, filters, status
+from rest_framework.decorators import action
+from rest_framework.response import Response
+from django.http import JsonResponse
+from django.views.decorators.csrf import csrf_exempt
+from .models import (
+    MedicalSpecialty, Doctor, DoctorAvailability,
+    AppointmentCategory, AppointmentSubcategory, 
+    LocationOption, Appointment
+)
+from .serializers import (
+    MedicalSpecialtySerializer, DoctorSerializer, DoctorAvailabilitySerializer,
+    AppointmentCategorySerializer, AppointmentSubcategorySerializer,
+    LocationOptionSerializer, AppointmentSerializer
+)
+import json
+from datetime import datetime, timedelta
+from django.utils import timezone
+from django.db.models import Q
+
+# Dictionary for multilingual support
+# Can be extended with more languages as needed
+TRANSLATIONS = {
+    'en': {
+        'welcome': "Welcome to our appointment scheduling system! I'll help you book an appointment with the right specialist. Please select the category that best describes your medical concern:",
+        'select_subcategory': "Thank you. Please select the specific issue you're experiencing related to {}:",
+        'specific_location': "Is this {} in a specific location?",
+        'yes': "Yes",
+        'no': "No",
+        'select_location': "Please select the location:",
+        'recommend_doctor': "Based on your selections, we recommend seeing a {} specialist who can help with {}. Please select a doctor:",
+        'recommend_doctor_with_location': "Based on your selections, we recommend seeing a {} specialist who can help with {} in the {}. Please select a doctor:",
+        'select_date': "Please select a preferred date for your appointment with Dr. {}:",
+        'available_slots': "Dr. {} has the following available time slots on {}:",
+        'contact_info': "Please provide your contact information to complete your appointment booking:",
+        'full_name': "Full Name",
+        'phone_number': "Phone Number",
+        'email_address': "Email Address",
+        'appointment_confirmed': "Thank you! I've scheduled your appointment with Dr. {} ({}) on {} at {} for {}. You'll receive a confirmation email shortly.",
+        'anything_else': "Your appointment has been confirmed! Is there anything else you'd like to know about your upcoming appointment?"
+    },
+    'hi': {
+        'welcome': "हमारी अपॉइंटमेंट शेड्यूलिंग सिस्टम में आपका स्वागत है! मैं आपको सही विशेषज्ञ के साथ अपॉइंटमेंट बुक करने में मदद करूंगा/करूंगी। कृपया उस श्रेणी का चयन करें जो आपकी चिकित्सा चिंता का सबसे अच्छा वर्णन करती है:",
+        'select_subcategory': "धन्यवाद। कृपया {} से संबंधित विशिष्ट समस्या का चयन करें जिसका आप अनुभव कर रहे हैं:",
+        'specific_location': "क्या यह {} किसी विशिष्ट स्थान पर है?",
+        'yes': "हां",
+        'no': "नहीं",
+        'select_location': "कृपया स्थान चुनें:",
+        'recommend_doctor': "आपके चयनों के आधार पर, हम {} में मदद कर सकने वाले {} विशेषज्ञ से मिलने की सलाह देते हैं। कृपया डॉक्टर का चयन करें:",
+        'recommend_doctor_with_location': "आपके चयनों के आधार पर, हम {} में {} में मदद कर सकने वाले {} विशेषज्ञ से मिलने की सलाह देते हैं। कृपया डॉक्टर का चयन करें:",
+        'select_date': "कृपया डॉ. {} के साथ अपनी अपॉइंटमेंट के लिए पसंदीदा तारीख चुनें:",
+        'available_slots': "डॉ. {} के पास {} को निम्नलिखित उपलब्ध समय स्लॉट हैं:",
+        'contact_info': "अपनी अपॉइंटमेंट बुकिंग पूरी करने के लिए कृपया अपनी संपर्क जानकारी प्रदान करें:",
+        'full_name': "पूरा नाम",
+        'phone_number': "फोन नंबर",
+        'email_address': "ईमेल पता",
+        'appointment_confirmed': "धन्यवाद! मैंने {} को {} बजे {} के लिए डॉ. {} ({}) के साथ आपकी अपॉइंटमेंट शेड्यूल कर दी है। आपको शीघ्र ही एक पुष्टिकरण ईमेल प्राप्त होगा।",
+        'anything_else': "आपकी अपॉइंटमेंट की पुष्टि हो गई है! क्या आप अपनी आगामी अपॉइंटमेंट के बारे में कुछ और जानना चाहेंगे?"
+    }
+    # Add more languages as needed
+}
+
+# Helper function to get translated text
+def get_translation(key, language, *args):
+    """Get translated text for the given key and language"""
+    # Default to English if language not supported
+    if language not in TRANSLATIONS:
+        language = 'en'
+    
+    # Get the translation template
+    translation = TRANSLATIONS[language].get(key, TRANSLATIONS['en'].get(key, ""))
+    
+    # Format with args if provided
+    if args:
+        return translation.format(*args)
+    return translation
+
+
+class MedicalSpecialtyViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = MedicalSpecialty.objects.all()
+    serializer_class = MedicalSpecialtySerializer
+
+
+class DoctorViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = Doctor.objects.filter(is_active=True)
+    serializer_class = DoctorSerializer
+    filter_backends = [filters.SearchFilter]
+    search_fields = ['name', 'specialty__name']
+    
+    @action(detail=True, methods=['get'])
+    def availability(self, request, pk=None):
+        """Get doctor's available time slots"""
+        doctor = self.get_object()
+        # Get date range (default: next 7 days)
+        days = int(request.query_params.get('days', 7))
+        start_date = timezone.now().date()
+        end_date = start_date + timedelta(days=days)
+        
+        # Get available slots in date range
+        availabilities = DoctorAvailability.objects.filter(
+            doctor=doctor,
+            date__gte=start_date,
+            date__lte=end_date,
+            is_available=True
+        ).order_by('date', 'start_time')
+        
+        serializer = DoctorAvailabilitySerializer(availabilities, many=True)
+        return Response(serializer.data)
+
+
+class AppointmentCategoryViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = AppointmentCategory.objects.all()
+    serializer_class = AppointmentCategorySerializer
+    
+    @action(detail=True, methods=['get'])
+    def subcategories(self, request, pk=None):
+        """Get subcategories for a specific category"""
+        category = self.get_object()
+        subcategories = category.subcategories.all()
+        serializer = AppointmentSubcategorySerializer(subcategories, many=True)
+        return Response(serializer.data)
+
+
+class AppointmentSubcategoryViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = AppointmentSubcategory.objects.all()
+    serializer_class = AppointmentSubcategorySerializer
+    
+    @action(detail=True, methods=['get'])
+    def locations(self, request, pk=None):
+        """Get location options for a specific subcategory"""
+        subcategory = self.get_object()
+        locations = subcategory.locations.all()
+        serializer = LocationOptionSerializer(locations, many=True)
+        return Response(serializer.data)
+    
+    @action(detail=True, methods=['get'])
+    def doctors(self, request, pk=None):
+        """Get recommended doctors for this subcategory"""
+        subcategory = self.get_object()
+        # Get doctors with matching specialties
+        doctors = Doctor.objects.filter(
+            specialty__in=subcategory.specialties.all(),
+            is_active=True
+        ).distinct()
+        serializer = DoctorSerializer(doctors, many=True)
+        return Response(serializer.data)
+
+
+class AppointmentViewSet(viewsets.ModelViewSet):
+    serializer_class = AppointmentSerializer
+    
+    def get_queryset(self):
+        # For now, return all appointments
+        # In production, you'd filter by user or doctor permissions
+        return Appointment.objects.all().order_by('-appointment_date', '-appointment_time')
+    
+    def perform_create(self, serializer):
+        """Override create to associate with default user if not authenticated"""
+        from django.contrib.auth.models import User
+        user = self.request.user
+        if not user or not user.is_authenticated:
+            user = User.objects.first()  # Default user
+        serializer.save(user=user)
+    
+    @action(detail=False, methods=['get'])
+    def user_appointments(self, request):
+        """Get appointments for the current user"""
+        user = request.user
+        if not user.is_authenticated:
+            # For testing: get default user's appointments
+            from django.contrib.auth.models import User
+            user = User.objects.first()
+            
+        appointments = Appointment.objects.filter(user=user).order_by('-appointment_date')
+        serializer = self.get_serializer(appointments, many=True)
+        return Response(serializer.data)
+    
+    @action(detail=True, methods=['post'])
+    def cancel(self, request, pk=None):
+        """Cancel an appointment"""
+        appointment = self.get_object()
+        appointment.status = 'cancelled'
+        appointment.save()
+        serializer = self.get_serializer(appointment)
+        return Response(serializer.data)
+
+
+# Appointment chatbot with flexible language support
+@csrf_exempt
+def appointment_chatbot(request):
+    """Handle the guided appointment scheduling chatbot interactions"""
+    try:
+        data = json.loads(request.body)
+        step = data.get('step', 'initial')
+        language = data.get('language', 'en')
+        
+        # Get the default user for appointments
+        from django.contrib.auth.models import User
+        default_user = User.objects.first()
+        
+        # Handle different steps of the conversation
+        if step == 'initial':
+            # Return categories
+            categories = AppointmentCategory.objects.all()
+            categories_data = [{'id': c.id, 'name': c.name} for c in categories]
+            
+            # Get welcome message in the requested language
+            message = get_translation('welcome', language)
+            
+            return JsonResponse({
+                'message': message,
+                'options': categories_data,
+                'next_step': 'category_selected'
+            })
+            
+        elif step == 'category_selected':
+            category_id = data.get('selection_id')
+            try:
+                category = AppointmentCategory.objects.get(id=category_id)
+                subcategories = category.subcategories.all()
+                subcategories_data = [{'id': s.id, 'name': s.name} for s in subcategories]
+                
+                message = get_translation('select_subcategory', language, category.name)
+                
+                return JsonResponse({
+                    'message': message,
+                    'options': subcategories_data,
+                    'selected_category': category.name,
+                    'selected_category_id': category.id,
+                    'next_step': 'subcategory_selected'
+                })
+                
+            except AppointmentCategory.DoesNotExist:
+                return JsonResponse({'error': 'Category not found'}, status=400)
+                
+        elif step == 'subcategory_selected':
+            subcategory_id = data.get('selection_id')
+            try:
+                subcategory = AppointmentSubcategory.objects.get(id=subcategory_id)
+                # Check if this subcategory has locations
+                locations = subcategory.locations.all()
+                
+                if locations.exists():
+                    locations_data = [{'id': l.id, 'name': l.name} for l in locations]
+                    
+                    message = get_translation('specific_location', language, subcategory.name)
+                    
+                    return JsonResponse({
+                        'message': message,
+                        'options': [
+                            {'id': 'yes', 'name': get_translation('yes', language)},
+                            {'id': 'no', 'name': get_translation('no', language)}
+                        ],
+                        'selected_subcategory': subcategory.name,
+                        'selected_subcategory_id': subcategory.id,
+                        'next_step': 'location_choice'
+                    })
+                else:
+                    # Skip location step and go to specialist recommendation
+                    # Find recommended doctors
+                    doctors = Doctor.objects.filter(
+                        specialty__in=subcategory.specialties.all(),
+                        is_active=True
+                    ).distinct()
+                    
+                    doctors_data = []
+                    for doctor in doctors:
+                        doctors_data.append({
+                            'id': doctor.id,
+                            'name': doctor.name,
+                            'specialty': doctor.specialty.name
+                        })
+                    
+                    # Get first specialty name for recommendation
+                    specialty_name = subcategory.specialties.first().name if subcategory.specialties.exists() else ""
+                    
+                    message = get_translation('recommend_doctor', language, specialty_name, subcategory.name)
+                    
+                    return JsonResponse({
+                        'message': message,
+                        'options': doctors_data,
+                        'selected_subcategory': subcategory.name,
+                        'selected_subcategory_id': subcategory.id,
+                        'next_step': 'doctor_selected'
+                    })
+                    
+            except AppointmentSubcategory.DoesNotExist:
+                return JsonResponse({'error': 'Subcategory not found'}, status=400)
+                
+        elif step == 'location_choice':
+            choice = data.get('selection_id')
+            subcategory_id = data.get('selected_subcategory_id')
+            
+            try:
+                subcategory = AppointmentSubcategory.objects.get(id=subcategory_id)
+                
+                if choice == 'yes':
+                    # Show location options
+                    locations = subcategory.locations.all()
+                    locations_data = [{'id': l.id, 'name': l.name} for l in locations]
+                    
+                    message = get_translation('select_location', language)
+                    
+                    return JsonResponse({
+                        'message': message,
+                        'options': locations_data,
+                        'selected_subcategory': subcategory.name,
+                        'selected_subcategory_id': subcategory.id,
+                        'next_step': 'location_selected'
+                    })
+                else:
+                    # Skip location selection, go to specialist recommendation
+                    doctors = Doctor.objects.filter(
+                        specialty__in=subcategory.specialties.all(),
+                        is_active=True
+                    ).distinct()
+                    
+                    doctors_data = []
+                    for doctor in doctors:
+                        doctors_data.append({
+                            'id': doctor.id,
+                            'name': doctor.name,
+                            'specialty': doctor.specialty.name
+                        })
+                    
+                    # Get first specialty name for recommendation
+                    specialty_name = subcategory.specialties.first().name if subcategory.specialties.exists() else ""
+                    
+                    message = get_translation('recommend_doctor', language, specialty_name, subcategory.name)
+                    
+                    return JsonResponse({
+                        'message': message,
+                        'options': doctors_data,
+                        'selected_subcategory': subcategory.name,
+                        'selected_subcategory_id': subcategory.id,
+                        'next_step': 'doctor_selected'
+                    })
+                    
+            except AppointmentSubcategory.DoesNotExist:
+                return JsonResponse({'error': 'Subcategory not found'}, status=400)
+                
+        elif step == 'location_selected':
+            location_id = data.get('selection_id')
+            subcategory_id = data.get('selected_subcategory_id')
+            
+            try:
+                location = LocationOption.objects.get(id=location_id)
+                subcategory = AppointmentSubcategory.objects.get(id=subcategory_id)
+                
+                # Find recommended doctors
+                doctors = Doctor.objects.filter(
+                    specialty__in=subcategory.specialties.all(),
+                    is_active=True
+                ).distinct()
+                
+                doctors_data = []
+                for doctor in doctors:
+                    doctors_data.append({
+                        'id': doctor.id,
+                        'name': doctor.name,
+                        'specialty': doctor.specialty.name
+                    })
+                
+                # Get first specialty name for recommendation
+                specialty_name = subcategory.specialties.first().name if subcategory.specialties.exists() else ""
+                
+                message = get_translation('recommend_doctor_with_location', language, 
+                                         specialty_name, subcategory.name, location.name)
+                
+                return JsonResponse({
+                    'message': message,
+                    'options': doctors_data,
+                    'selected_location': location.name,
+                    'selected_location_id': location.id,
+                    'selected_subcategory': subcategory.name,
+                    'selected_subcategory_id': subcategory.id,
+                    'next_step': 'doctor_selected'
+                })
+                
+            except (LocationOption.DoesNotExist, AppointmentSubcategory.DoesNotExist):
+                return JsonResponse({'error': 'Location or subcategory not found'}, status=400)
+                
+        elif step == 'doctor_selected':
+            doctor_id = data.get('selection_id')
+            
+            try:
+                doctor = Doctor.objects.get(id=doctor_id)
+                
+                # Get available dates (next 7 days)
+                start_date = timezone.now().date()
+                end_date = start_date + timedelta(days=7)
+                
+                # Get unique available dates
+                availabilities = DoctorAvailability.objects.filter(
+                    doctor=doctor,
+                    date__gte=start_date,
+                    date__lte=end_date,
+                    is_available=True
+                ).order_by('date')
+                
+                # Get unique dates
+                unique_dates = availabilities.values_list('date', flat=True).distinct()
+                
+                dates_data = []
+                for date in unique_dates:
+                    date_format = '%A, %B %d, %Y' if language == 'en' else '%Y-%m-%d'
+                    dates_data.append({
+                        'id': date.strftime('%Y-%m-%d'),
+                        'name': date.strftime(date_format)
+                    })
+                
+                message = get_translation('select_date', language, doctor.name)
+                
+                return JsonResponse({
+                    'message': message,
+                    'options': dates_data,
+                    'selected_doctor': doctor.name,
+                    'selected_doctor_id': doctor.id,
+                    'next_step': 'date_selected'
+                })
+                
+            except Doctor.DoesNotExist:
+                return JsonResponse({'error': 'Doctor not found'}, status=400)
+                
+        elif step == 'date_selected':
+            date_str = data.get('selection_id')  # Format: 'YYYY-MM-DD'
+            doctor_id = data.get('selected_doctor_id')
+            
+            try:
+                doctor = Doctor.objects.get(id=doctor_id)
+                selected_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+                
+                # Get available time slots for the selected date
+                availabilities = DoctorAvailability.objects.filter(
+                    doctor=doctor,
+                    date=selected_date,
+                    is_available=True
+                ).order_by('start_time')
+                
+                time_slots = []
+                for slot in availabilities:
+                    time_slots.append({
+                        'id': f"{slot.start_time.strftime('%H:%M')}",
+                        'name': f"{slot.start_time.strftime('%I:%M %p')}"
+                    })
+                
+                date_format = '%A, %B %d, %Y' if language == 'en' else '%d-%m-%Y'
+                formatted_date = selected_date.strftime(date_format)
+                
+                message = get_translation('available_slots', language, doctor.name, formatted_date)
+                
+                return JsonResponse({
+                    'message': message,
+                    'options': time_slots,
+                    'selected_date': date_str,
+                    'selected_doctor': doctor.name,
+                    'selected_doctor_id': doctor.id,
+                    'next_step': 'time_selected'
+                })
+                
+            except (Doctor.DoesNotExist, ValueError):
+                return JsonResponse({'error': 'Doctor not found or invalid date format'}, status=400)
+                
+        elif step == 'time_selected':
+            time_str = data.get('selection_id')  # Format: 'HH:MM'
+            doctor_id = data.get('selected_doctor_id')
+            date_str = data.get('selected_date')  # Format: 'YYYY-MM-DD'
+            
+            # No database lookup needed here, just build the contact form
+            message = get_translation('contact_info', language)
+            
+            # For this step, we'll return form fields instead of options
+            form_fields = [
+                {'name': 'patient_name', 'label': get_translation('full_name', language), 'type': 'text', 'required': True},
+                {'name': 'patient_phone', 'label': get_translation('phone_number', language), 'type': 'tel', 'required': True},
+                {'name': 'patient_email', 'label': get_translation('email_address', language), 'type': 'email', 'required': True}
+            ]
+            
+            return JsonResponse({
+                'message': message,
+                'form_fields': form_fields,
+                'selected_time': time_str,
+                'selected_date': date_str,
+                'selected_doctor_id': doctor_id,
+                'next_step': 'contact_submitted'
+            })
+            
+        elif step == 'contact_submitted':
+            # Get all form data
+            doctor_id = data.get('selected_doctor_id')
+            date_str = data.get('selected_date')
+            time_str = data.get('selected_time')
+            patient_name = data.get('patient_name')
+            patient_phone = data.get('patient_phone')
+            patient_email = data.get('patient_email')
+            
+            # Also get any selected category/subcategory/location IDs
+            category_id = data.get('selected_category_id')
+            subcategory_id = data.get('selected_subcategory_id')
+            location_id = data.get('selected_location_id')
+            
+            try:
+                # Convert string inputs to appropriate types
+                appointment_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+                appointment_time = datetime.strptime(time_str, '%H:%M').time()
+                
+                # Get required objects
+                doctor = Doctor.objects.get(id=doctor_id)
+                category = AppointmentCategory.objects.get(id=category_id) if category_id else None
+                subcategory = AppointmentSubcategory.objects.get(id=subcategory_id) if subcategory_id else None
+                location = LocationOption.objects.get(id=location_id) if location_id else None
+                
+                # Get user (or default)
+                from django.contrib.auth.models import User
+                user = data.get('user')
+                if not user:
+                    user = User.objects.first()  # Default user
+                
+                # Create appointment
+                appointment = Appointment.objects.create(
+                    user=user,
+                    doctor=doctor,
+                    appointment_date=appointment_date,
+                    appointment_time=appointment_time,
+                    category=category,
+                    subcategory=subcategory,
+                    location=location,
+                    patient_name=patient_name,
+                    patient_phone=patient_phone,
+                    patient_email=patient_email,
+                    status='scheduled'
+                )
+                
+                # Format date and time for response
+                date_format = '%A, %B %d, %Y' if language == 'en' else '%d-%m-%Y'
+                formatted_date = appointment_date.strftime(date_format)
+                formatted_time = appointment_time.strftime('%I:%M %p')
+                
+                # Generate appointment details
+                reason = f"{subcategory.name}" if subcategory else ""
+                if location:
+                    reason += f" ({location.name})"
+                
+                # Create confirmation message
+                message = get_translation('appointment_confirmed', language,
+                                         doctor.name, doctor.specialty.name,
+                                         formatted_date, formatted_time, reason)
+                
+                # Return success response
+                return JsonResponse({
+                    'message': message,
+                    'appointment_id': appointment.id,
+                    'next_step': 'confirmation',
+                    'follow_up_message': get_translation('anything_else', language)
+                })
+                
+            except Exception as e:
+                # Handle any errors
+                return JsonResponse({'error': str(e)}, status=400)
+    
+    except Exception as e:
+        return JsonResponse({'error': str(e)}, status=400)
