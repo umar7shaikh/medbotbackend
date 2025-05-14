@@ -1357,3 +1357,85 @@ def appointment_chatbot(request):
     
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=400)
+    
+
+
+
+
+from rest_framework import viewsets, status
+from rest_framework.response import Response
+from rest_framework.decorators import action
+from django.contrib.auth import get_user_model
+from .models import HealthMetrics
+from .serializers import HealthMetricsSerializer
+
+User = get_user_model()
+
+class HealthMetricsViewSet(viewsets.ModelViewSet):
+    serializer_class = HealthMetricsSerializer
+    queryset = HealthMetrics.objects.all()
+    
+    def get_queryset(self):
+        """Return metrics for default user"""
+        user = self.request.user if self.request.user.is_authenticated else User.objects.first()
+        return self.queryset.filter(user=user).order_by('-timestamp')
+    
+    def perform_create(self, serializer):
+        """Auto-assign to default user if not authenticated"""
+        user = self.request.user if self.request.user.is_authenticated else User.objects.first()
+        instance = serializer.save(user=user)
+        # Calculate score on creation
+        instance.calculate_health_score()
+        instance.save()
+
+    def update(self, request, *args, **kwargs):
+        """Override update to ensure health score recalculation"""
+        partial = kwargs.pop('partial', False)
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        
+        # Perform standard update
+        self.perform_update(serializer)
+        
+        # Refresh from database and recalculate score
+        instance.refresh_from_db()
+        instance.calculate_health_score()
+        instance.save()
+        
+        # Return updated data including new score
+        serializer = self.get_serializer(instance)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=['get'])
+    def latest(self, request):
+        """Get latest metrics for the user"""
+        try:
+            user = request.user if request.user.is_authenticated else User.objects.first()
+            metrics = HealthMetrics.objects.filter(user=user).order_by('-timestamp').first()
+            
+            if not metrics:
+                # Create default metrics if none exist
+                metrics = HealthMetrics.objects.create(
+                    user=user,
+                    systolic_bp=120,
+                    diastolic_bp=80,
+                    heart_rate=72,
+                    blood_glucose=90,
+                    weight=70,  # kg
+                    height=175,  # cm
+                    daily_steps=8000,
+                    sleep_hours=8,
+                    oxygen_saturation=98
+                )
+                metrics.calculate_health_score()
+                metrics.save()
+                
+            serializer = self.get_serializer(metrics)
+            return Response(serializer.data)
+            
+        except Exception as e:
+            return Response(
+                {'error': str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )

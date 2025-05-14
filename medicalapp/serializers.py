@@ -3,7 +3,7 @@ from rest_framework import serializers
 from .models import Medication, MedicationLog, Conversation, Message, MedicalImage
 from .models import (
     MedicalSpecialty, Doctor, DoctorAvailability,
-    AppointmentCategory, AppointmentSubcategory, LocationOption, Appointment
+    AppointmentCategory, AppointmentSubcategory, LocationOption, Appointment,HealthMetrics
 )
 
 
@@ -90,3 +90,19 @@ class AppointmentSerializer(serializers.ModelSerializer):
             'location', 'location_name', 'patient_name', 'patient_phone',
             'patient_email', 'status', 'notes', 'created_at'
         ]
+
+
+class HealthMetricsSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = HealthMetrics
+        fields = '__all__'
+        read_only_fields = ('user', 'timestamp', 'bmi', 'health_score')
+
+    def validate(self, data):
+        errors = {}
+        if 'systolic_bp' in data and 'diastolic_bp' in data:
+            if data['systolic_bp'] < data['diastolic_bp']:
+                errors['blood_pressure'] = "Systolic must be higher than diastolic"
+        if errors:
+            raise serializers.ValidationError(errors)
+        return data

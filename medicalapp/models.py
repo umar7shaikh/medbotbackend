@@ -169,3 +169,99 @@ class Appointment(models.Model):
     
     def __str__(self):
         return f"{self.patient_name} with {self.doctor} on {self.appointment_date} at {self.appointment_time}"
+
+
+
+from django.db import models
+from django.contrib.auth import get_user_model
+
+User = get_user_model()
+
+class HealthMetrics(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='health_metrics')
+    timestamp = models.DateTimeField(auto_now_add=True)
+    last_updated = models.DateTimeField(auto_now=True)
+    
+    # Vital Signs
+    systolic_bp = models.PositiveSmallIntegerField(null=True, blank=True)
+    diastolic_bp = models.PositiveSmallIntegerField(null=True, blank=True)
+    heart_rate = models.PositiveSmallIntegerField(null=True, blank=True)
+    oxygen_saturation = models.PositiveSmallIntegerField(null=True, blank=True)
+    
+    # Biochemical
+    blood_glucose = models.PositiveSmallIntegerField(null=True, blank=True)
+    
+    # Anthropometric
+    weight = models.FloatField(null=True, blank=True)  # kg
+    height = models.FloatField(null=True, blank=True)  # cm
+    
+    # Activity
+    daily_steps = models.PositiveIntegerField(null=True, blank=True)
+    sleep_hours = models.FloatField(null=True, blank=True)
+    
+    # Calculated Fields
+    bmi = models.FloatField(null=True, blank=True)
+    health_score = models.PositiveSmallIntegerField(null=True, blank=True)
+
+    def save(self, *args, **kwargs):
+        """Auto-calculate BMI on save"""
+        if self.height and self.weight:
+            self.bmi = round(self.weight / ((self.height/100) ** 2), 1)
+        super().save(*args, **kwargs)
+
+    def calculate_health_score(self):
+        scores = {}
+
+    
+        # Blood Pressure (30 points max)
+        if self.systolic_bp and self.diastolic_bp:
+            if self.systolic_bp <= 120 and self.diastolic_bp <= 80:
+                scores['bp'] = 30  # Perfect
+            elif self.systolic_bp <= 130 and self.diastolic_bp <= 85:
+                scores['bp'] = 25  # Elevated
+            elif self.systolic_bp <= 140 or self.diastolic_bp <= 90:
+                scores['bp'] = 15  # Stage 1 Hypertension
+            else:
+                scores['bp'] = 5   # Stage 2 Hypertension
+
+        # Blood Glucose (20 points max)
+        if self.blood_glucose:
+            if self.blood_glucose <= 100:
+                scores['glucose'] = 20
+            elif self.blood_glucose <= 125:
+                scores['glucose'] = 10
+            else:
+                scores['glucose'] = 5  # Deduct more for high glucose
+
+        # BMI (15 points max)
+        if self.bmi:
+            if 18.5 <= self.bmi <= 24.9:
+                scores['bmi'] = 15
+            elif 25 <= self.bmi <= 29.9:
+                scores['bmi'] = 8  # Overweight penalty
+            else:
+                scores['bmi'] = 3  # Obese penalty
+
+        # Activity (15 points max)
+        if self.daily_steps:
+            if self.daily_steps >= 10000:
+                scores['activity'] = 15
+            elif self.daily_steps >= 8000:
+                scores['activity'] = 10
+            else:
+                scores['activity'] = 5
+
+        # Other metrics (20 points total)
+        scores['other'] = 0
+        if self.heart_rate and 60 <= self.heart_rate <= 80:
+            scores['other'] += 5
+        if self.sleep_hours and 7 <= self.sleep_hours <= 9:
+            scores['other'] += 5
+        if self.oxygen_saturation and self.oxygen_saturation >= 95:
+            scores['other'] += 5
+        if self.weight and self.height:  # Already counted in BMI
+            scores['other'] += 5
+
+        total_score = sum(scores.values())
+        self.health_score = min(100, max(0, round(total_score)))
+        return self.health_score

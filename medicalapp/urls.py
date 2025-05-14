@@ -2,7 +2,7 @@ app_name = "medicalapp"
 
 
 from rest_framework.routers import DefaultRouter
-from .views import MedicationViewSet, MedicationLogViewSet
+from .views import MedicationViewSet, MedicationLogViewSet,HealthMetricsViewSet
 from django.urls import path,include
 from . import views
 
@@ -16,6 +16,7 @@ router.register(r'doctors', views.DoctorViewSet)
 router.register(r'appointment-categories', views.AppointmentCategoryViewSet)
 router.register(r'appointment-subcategories', views.AppointmentSubcategoryViewSet)
 router.register(r'appointments', views.AppointmentViewSet, basename='appointment')
+router.register(r'health-metrics', HealthMetricsViewSet, basename='health-metrics')
 
 urlpatterns = [
     path('login/', views.login_view, name='login'), 
@@ -29,4 +30,6 @@ urlpatterns = [
     path('api/', include(router.urls)),
     path('api/medication-management/', views.medication_api, name='medication_api'),
     path('api/appointment-chatbot/', views.appointment_chatbot, name='appointment-chatbot'),
+
+
 ]
