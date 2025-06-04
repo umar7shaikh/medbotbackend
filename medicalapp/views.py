@@ -827,7 +827,7 @@ TRANSLATIONS = {
         'select_location': "Please select the location:",
         'recommend_doctor': "Based on your selections, we recommend seeing a {} specialist who can help with {}. Please select a doctor:",
         'recommend_doctor_with_location': "Based on your selections, we recommend seeing a {} specialist who can help with {} in the {}. Please select a doctor:",
-        'select_date': "Please select a preferred date for your appointment with Dr. {}:",
+        'select_date': "Please select a preferred date for your appointment with {}:",
         'available_slots': "Dr. {} has the following available time slots on {}:",
         'contact_info': "Please provide your contact information to complete your appointment booking:",
         'full_name': "Full Name",
