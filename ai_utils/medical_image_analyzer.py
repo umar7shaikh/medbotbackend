@@ -1,76 +1,57 @@
-import requests
 import logging
 from PIL import Image
-from io import BytesIO
-from django.conf import settings
+from transformers import BlipProcessor, BlipForConditionalGeneration
+import torch
 
 class MedicalImageAnalyzer:
     def __init__(self):
         """
-        Initialize medical image analysis using Hugging Face API (BLIP Image Captioning).
+        Initialize medical image analysis using local BLIP model.
         """
         self.logger = logging.getLogger(__name__)
-        self.api_url = "https://api-inference.huggingface.co/models/Salesforce/blip-image-captioning-base"
-        self.api_key = settings.HUGGINGFACE_API_KEY  # Ensure this is correctly set in Django settings
+        print("⏳ Loading BLIP processor and model...")
+
+        try:
+            self.processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
+            self.model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base")
+
+            # Optional: use GPU if available
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            self.model.to(self.device)
+
+            print("✅ BLIP model loaded successfully!")
+        except Exception as e:
+            print(f"💥 Failed to load BLIP: {e}")
+            self.logger.error(f"BLIP load error: {e}")
+            raise
 
     def analyze_medical_image(self, image):
         """
-        Analyze an image using BLIP image captioning model.
-
-        Args:
-            image (PIL.Image or file-like object): The uploaded medical image
-
-        Returns:
-            dict: Caption (text-based description) of the image
+        Analyze an image using locally loaded BLIP image captioning.
         """
         try:
             # Handle both PIL Image and file-like objects
             if not isinstance(image, Image.Image):
                 try:
-                    # Make sure to reset file pointer to start if it's a file
                     if hasattr(image, 'seek'):
                         image.seek(0)
-                    image = Image.open(image)
+                    image = Image.open(image).convert("RGB")
                 except Exception as e:
                     self.logger.error(f"Failed to open image: {e}")
                     return {"error": f"Failed to process image: {str(e)}"}
 
-            # Convert image to binary format
-            buffered = BytesIO()
-            image.save(buffered, format="JPEG")
-            image_bytes = buffered.getvalue()
+            print("🖼️  Running BLIP captioning locally...")
 
-            # Debug info
-            self.logger.info(f"Sending image to Hugging Face API: {len(image_bytes)} bytes")
+            # Preprocess and generate
+            inputs = self.processor(images=image, return_tensors="pt").to(self.device)
+            output = self.model.generate(**inputs)
 
-            # Prepare API request
-            headers = {
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/octet-stream"  # Important for binary data
-            }
-            
-            # Send raw image bytes in request body
-            response = requests.post(
-                self.api_url,
-                headers=headers,
-                data=image_bytes  # Send the raw bytes directly
-            )
+            caption = self.processor.decode(output[0], skip_special_tokens=True)
+            print(f"📝 Caption: {caption}")
 
-            # Log response details
-            self.logger.info(f"API response status: {response.status_code}")
-            self.logger.info(f"API response text: {response.text}")
-
-            # Handle API errors
-            if response.status_code != 200:
-                return {"error": f"Hugging Face API Error: {response.text}"}
-
-            # Extract caption from API response
-            results = response.json()
-            if isinstance(results, list) and len(results) > 0 and "generated_text" in results[0]:
-                return {"caption": results[0]["generated_text"]}
-
-            return {"error": "Unexpected response format from Hugging Face API"}
+            return {"caption": caption}
 
         except Exception as e:
+            print(f"💥 Exception during image analysis: {str(e)}")
             self.logger.error(f"Image analysis error: {e}")
             return {"error": str(e)}
